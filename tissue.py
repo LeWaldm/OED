@@ -16,35 +16,52 @@ class Tissue():
 
 		# Start with one tissue fragment
 		self.X_fragment_idx = [np.arange(self.n_total)]
+		self.observed_idx = []
+		self.designs = []
 
-	def slice(self, design, fragment_num):
-		# design should be of the form [b0, b1] or [b0, b1, b2]
-		# b0 is the intercept and b1, b2 are slopes (depending on if
-		# 2D or 3D)
+	def compute_slice(self,design,fragment_num):
+		"""
+		computes indices above below and in a slice
+		
+		design: should be of the form [b0, b1] or [b0, b1, b2]
+			b0 is the intercept and b1, b2 are slopes (depending on if
+			2D or 3D)
+		"""
+
 		curr_fragment_idx = self.X_fragment_idx[fragment_num]
 		fragment_X = self.X[curr_fragment_idx]
 
-		# Split into fragments above and below slice
+		plane_values = design[0] + np.dot(fragment_X[:, :-1], design[1:])
 		above_fragment_idx = np.where(
-			fragment_X[:, -1]
-			>= design[0] + np.dot(fragment_X[:, :-1], design[1:])
+			fragment_X[:, -1] >= plane_values + self.slice_radius
 		)[0]
 		below_fragment_idx = np.where(
-			fragment_X[:, -1]
-			<= design[0] + np.dot(fragment_X[:, :-1], design[1:])
+			fragment_X[:, -1] <= plane_values - self.slice_radius
 		)[0]
+		in_slice_idx = np.where(
+			np.abs(fragment_X[:, -1] - plane_values) < self.slice_radius
+		)
 
 		above_idx = curr_fragment_idx[above_fragment_idx]
 		below_idx = curr_fragment_idx[below_fragment_idx]
+		in_idx = curr_fragment_idx[in_slice_idx]
+		return below_idx,in_idx,above_idx
+
+
+	def slice(self, design, fragment_num):
+		below_idx,in_idx,above_idx = self.compute_slice(design,fragment_num)
 		self.X_fragment_idx.pop(fragment_num)
 		self.X_fragment_idx.append(above_idx)
 		self.X_fragment_idx.append(below_idx)
+		self.observed_idx.extend(in_idx)
+		self.designs.append(design)
 
 	def get_X_idx_near_slice(self, design, fragment_num):
-		curr_fragment_idx = self.X_fragment_idx[fragment_num]
-		fragment_X = self.X[curr_fragment_idx]
+		below_idx,in_idx,above_idx = self.compute_slice(design,fragment_num)
+		return in_idx
 
-		intercept, slope = design
-		dists = np.abs(-slope * fragment_X[:, 0] + fragment_X[:, 1] - intercept) / np.sqrt(slope ** 2 + 1)
-		observed_idx = np.where(dists <= self.slice_radius)[0]
-		return curr_fragment_idx[observed_idx]
+	def get_fragment(self,idx):
+		return self.X[self.X_fragment_idx[idx]]
+	
+	def get_all_observed_data(self):
+		return self.X[self.observed_idx,:], self.Y[self.observed_idx]

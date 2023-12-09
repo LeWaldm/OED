@@ -1,3 +1,7 @@
+#####
+# parts of the code are from https://github.com/andrewcharlesjones/spatial-experimental-design
+#####
+
 import numpy as np
 import pandas as pd
 import warnings

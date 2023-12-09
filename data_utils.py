@@ -1,3 +1,7 @@
+#####
+# parts of the code are from https://github.com/andrewcharlesjones/spatial-experimental-design
+#####
+
 from importlib.metadata import distribution
 from lib2to3.pytree import convert
 import numpy as np
@@ -445,7 +449,7 @@ class Tissue_discrete(Experimenter):
             y_vals = intercept + slope * x_vals
             plt.plot(x_vals, y_vals, '--', label=label, **args)
 
-        plt.figure(figsize=(4,7))
+        plt.figure(figsize=(5,12))
 
         if metric_values is not None:
             nrows = 4
@@ -480,8 +484,15 @@ class Tissue_discrete(Experimenter):
 
             plt.subplot(nrows,1,3)
             pred_int = (pred_probs > 0.5).astype(np.int8)
-            plt.scatter(X[:,0],X[:,1], s=5, c=pred_int, marker="H")
+            if pred_int.mean() == 1.0:
+                x1 = torch.cat((X[0,0].unsqueeze(0), X[:,0]))
+                x2 = torch.cat((X[0,1].unsqueeze(0), X[:,1]))
+                c = torch.cat((torch.tensor(0.0).unsqueeze(0), torch.from_numpy(pred_int)))         
+                plt.scatter(x1,x2, s=5, c=c, marker="H")  
+            else:
+                plt.scatter(X[:,0],X[:,1], s=5, c=pred_int, marker="H")
             plt.gca().invert_yaxis()
+            plt.title('Binary predictions of the model')
             plt.gca().set_aspect('equal')
 
         if nrows >= 4:
@@ -539,7 +550,7 @@ class Tissue_cont_indicator(Experimenter):
         plt.show()
 
         # setup data
-        self.X_fragment_idx = [np.arange(self.n_total)]
+        # self.X_fragment_idx = [np.arange(self.n_total)]
         self.obs_data = {
             'design_params': [],
             'design': [],
@@ -582,11 +593,15 @@ class Tissue_cont_indicator(Experimenter):
         weights_all = self.plateau_fct(dists)
         idx = torch.cat([in_idx, shelf_idx])
 
-        design = torch.cat((weights_all[idx].reshape(-1,1),self.X[idx,:]),dim=1)
-        y = self.y[idx]
+        # design = torch.cat((weights_all[idx].reshape(-1,1),self.X[idx,:]),dim=1)
+        # y = self.y[idx]
+        # if return_in_idx:
+        #     in_idx_rel = torch.tensor([1]*len(in_idx) + [0]*len(shelf_idx))
+        #     return y,design,in_idx_rel
+        design = torch.cat((weights_all.reshape(-1,1),self.X),dim=1)
+        y = self.y
         if return_in_idx:
-            in_idx_rel = torch.tensor([1]*len(in_idx) + [0]*len(shelf_idx))
-            return y,design,in_idx_rel
+            return y,design, torch.arange(self.X.shape[0])
         return y,design
     
     def verbose_designs(self,
@@ -841,3 +856,5 @@ class Tissue_continuous(Experimenter):
                              markers=True)
             plt.title('Metrics of predictions')
         plt.show()
+
+

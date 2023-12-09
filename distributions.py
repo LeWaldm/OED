@@ -1,10 +1,6 @@
-from copy import deepcopy
-from multiprocessing import log_to_stderr
-from uu import Error
-from pandas import isna
 import torch
-import numpy as np
-from scipy.stats import bernoulli,multivariate_normal
+
+EPSILON = 1e-8
 
 class Distr_interface:
     def __init__(self):
@@ -12,6 +8,7 @@ class Distr_interface:
         self.params:dict = {}
         self.is_torch = False
         self.reparam_trick = False
+        self.params_constraints = {}
 
 class Distr(Distr_interface):
     """
@@ -48,18 +45,16 @@ class Distr(Distr_interface):
         returns: 1xp
         """
         raise NotImplementedError()
+    
 
 class Conditional_distr(Distr_interface):
     """
     Generic conditional distribution class over k-dim outcome y 
     given d-dim experimental design design and p-dim parameters of interest theta, i.e. 
         p(y | design, theta)
-
-    Thetas denote optional parameters of the distribution to use,
-    if empty use paremters of self.
     """
 
-    def sample(self,design,thetas=None):
+    def sample(self,design,thetas):
         """
         sample from distribution for given design and each given theta
 
@@ -71,7 +66,7 @@ class Conditional_distr(Distr_interface):
         """
         raise NotImplementedError()
     
-    def log_probs(self,ys,design,thetas=None):
+    def log_probs(self,ys,design,thetas):
         """
         calculate density (pmf) of distribution for inputs
 
@@ -84,12 +79,12 @@ class Conditional_distr(Distr_interface):
         """
         raise NotImplementedError()
     
-    def predict_mle(self,designs,thetas=None):
+    def predict_mle(self,design,thetas):
         """
         Calculate MLE of distribution given designs,thetas (i.e. predictions of designs under theta) 
         
         params:
-            designs: nxd
+            design: d
             thetas: nxp or 1xp (latter  will be broadcasted to nxp)
         
         returns: nx1
@@ -113,10 +108,10 @@ class Circle_predictive(Conditional_distr):
 
         if len(thetas.shape) == 1:
             r = thetas[0].reshape((1,1))
-            c = thetas[1:3].reshape((1,-1))
+            c = thetas[1:].reshape((1,-1))
         elif len(thetas.shape) == 2:
             r = thetas[:,0]
-            c = thetas[:,1:3]
+            c = thetas[:,1:]
         else:
             raise ValueError()
         return c,r
@@ -139,10 +134,11 @@ class Circle_predictive(Conditional_distr):
         c = torch.repeat_interleave(c, repeats=npoints, dim=0)
         points = points.repeat(n,1)
         
-        logits = torch.norm(points - c, dim=1) - r
+        if c.shape[1] == 2:
+            logits = torch.norm(points - c, dim=1) - r
+        else: # with temperature
+            logits = c[:,2] * (torch.norm(points - c[:,:2], dim=1) - r)
         bern_ps = torch.sigmoid(-logits).clamp(self.eps, 1-self.eps)
-        if torch.any(bern_ps.isnan()):
-            print('nan in bern_ps')
         log_probs_points = torch.distributions.Binomial(probs=bern_ps)\
             .log_prob(ys.reshape((-1)))
         log_probs = log_probs_points.reshape((n,npoints))
@@ -165,66 +161,83 @@ class Circle_predictive(Conditional_distr):
         c = torch.repeat_interleave(c,npoints,0)
         r = torch.repeat_interleave(r,npoints,0)
 
-        logits = torch.norm(points - c, dim=1) - r
+        if c.shape[1] == 2:
+            logits = torch.norm(points - c, dim=1) - r
+        else: # with temperature
+            logits = c[:,2] * (torch.norm(points - c[:,:2], dim=1) - r)
         bern_ps = torch.sigmoid(-logits).clamp(self.eps, 1-self.eps)
         samples = torch.distributions.Binomial(total_count=1,probs=bern_ps)\
             .sample(torch.tensor([1]))\
             .reshape((t,-1))
-        
         return samples
     
-    def predict_mle(self, designs, thetas):
+    def predict_mle(self, design, thetas):
         c,r = self._parse_params(thetas)
         if self.with_weights:
-            weights = designs[:,0]
-            designs = designs[:,1:]
-        logits = torch.norm(designs - c, dim=1) - r
+            weights = design[:,0]
+            design = design[:,1:]
+        if c.shape[1] == 2:
+            logits = torch.norm(design - c, dim=1) - r
+        else: # with temperature
+            logits = c[:,2] * (torch.norm(design - c[:,:2], dim=1) - r)
         bern_ps = torch.sigmoid(-logits).clamp(self.eps, 1-self.eps)
         return bern_ps
 
 
-class Circle_prior_log(Distr):
+class Circle_prior(Distr):
     """
-    models 3 pw independent rvs, first is exp(snormal) other two snormal.
-    Standard deviation is given as log.
+    models radius, center, and eventually temperature
+    Temperature needs to be given extra (since positive constraint). 
+    Std of temperature is in std.
     """
 
     def __init__(self, 
-                 mu = np.array([0.,0.,0.]), 
-                 log_std = np.array([1.,1.,1.])):
+                 mu = torch.tensor([0.,0.,0.,0.]),
+                 std = torch.tensor([1.,1.,1.,1.]),
+    ):
         super().__init__()
         self.params = {}
         self.params['mu'] = mu
-        self.params['log_std'] = log_std
+        self.params['std'] = std
+        self.params_constraints['std'] = 'positive'
+
         self.reparam_trick = True
-        self.min_log = torch.log(torch.tensor(1e-8))
+        self.min_log = torch.log(torch.tensor(EPSILON))
 
     def log_probs(self,thetas):
         r = thetas[:,0]
-        c = thetas[:,1:]
+        c = thetas[:,1:3]
+        temp = thetas[:,3]
         mu = self.params['mu']
-        std = torch.exp(self.params['log_std'])
+        std = self.params['std']
 
         prob_r = torch.distributions.Normal(
             loc=mu[0], scale=std[0]
         ).log_prob(torch.log(r))
 
         prob_c = torch.distributions.MultivariateNormal(
-            loc=mu[1:], covariance_matrix=torch.diag(std[1:]**2)
+            loc=mu[1:3], covariance_matrix=torch.diag(std[1:3]**2)
         ).log_prob(c)
 
-        res = (prob_c + prob_r)
-        res_clamp = res.clamp(self.min_log)
-        # if torch.any(res != res_clamp):
-        #     print('Clamped log_probs')
-        return res_clamp
+        prob_temp = torch.distributions.Normal(
+            loc=mu[3], scale=std[3]
+        ).log_prob(torch.log(temp))
+
+        res = (prob_c + prob_r + prob_temp).clamp(self.min_log)
+        return res
 
     def sample(self, n):
         mu = self.params['mu']
-        std = torch.exp(self.params['log_std'])
+        std = self.params['std']
 
-        rvs = torch.randn((n,3)) * std.reshape((1,-1)) + mu
-        return torch.hstack( (torch.exp(rvs[:,0]).reshape((-1,1)), rvs[:,1:]) )
+        rvs = torch.randn((n,mu.shape[0])) * std.reshape((1,-1)) + mu
+        return torch.hstack((
+            torch.exp(rvs[:,0]).reshape((-1,1)), 
+            rvs[:,1:3],
+            torch.exp(rvs[:,3]).reshape((-1,1)) ))
 
     def predict_mle(self):
-        return self.params['mu'].reshape((1,-1))
+        mu = self.params['mu']
+        out = torch.hstack((torch.exp(mu[0]), mu[1:3], torch.exp(mu[3]) ))\
+            .reshape((1,-1))
+        return out

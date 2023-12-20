@@ -404,10 +404,10 @@ def train_DAD_design_policy(
         prior:Distr,
         likelihood:Conditional_Distr_multixi,
         design_network:Design_Network,
-        n_simulations=100,
-        batch_size=1,
-        L = 50,
-        print_every=1,
+        n_steps = 100,
+        n_outer = 50,
+        L = 20,
+        print_every = 1,
         verbose = 'plot'
 ):
     assert likelihood.reparam_trick
@@ -415,14 +415,13 @@ def train_DAD_design_policy(
     # rollout likelihood over history
     def likelihood_history(history_xi, history_y, thetas):
         """
-        history_xi: batch_size x T x design_dim
-        history_y:  batch_size x T x y_dim
-        thetas:     batch_size x 1+L x theta_dim
+        history_xi: n_outer x T x design_dim
+        history_y:  n_outer x T x y_dim
+        thetas:     n_outer x 1+L x theta_dim
 
-        returns: batch_size x 1+L
+        returns: n_outer x 1+L
         """
-        lp_prior = prior.log_prob(thetas.reshape((-1,thetas.shape[2])))\
-            .reshape((batch_size,1+L))
+        lp_prior = prior.log_prob(thetas[:,0,:]).reshape((n_outer,1))
         
         xi = history_xi.unsqueeze(1).repeat((1,1+L,1,1))
         y = history_y.unsqueeze(1).repeat((1,1+L,1,1))
@@ -431,62 +430,58 @@ def train_DAD_design_policy(
             y.reshape((-1,y.shape[3])),
             xi.reshape((-1,xi.shape[3])),
             thetas.reshape((-1,thetas.shape[3])))
-        lp_lik = lp_lik.reshape((batch_size,1+L,T)).sum(axis=2)
+        lp_lik = lp_lik.reshape((n_outer,1+L,T)).sum(axis=2)
         log_prob = lp_lik + lp_prior
-        # xi = history_xi.reshape((-1,history_xi.shape[2]))
-        # y = history_y.reshape((-1,history_y.shape[2]))
-        # log_prob = likelihood.log_prob_multixi(
-        #     torch.repeat_interleave(y, repeats=k, dim=0),
-        #     torch.repeat_interleave(xi, repeats=k, dim=0),
-        #     thetas.repeat((batch_size*T,1)),
-        # )
-        # log_prob = log_prob.reshape((batch_size,T,k)).sum(axis=1)
-
         return log_prob
 
     # prepare optimization
     for p in design_network.parameters():
         p.requires_grad = True
-    optim = torch.optim.Adam(design_network.parameters(), lr=1e-4)
+    optim = torch.optim.Adam(design_network.parameters(), lr=5e-5, betas=(0.8,0.998))
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optim, gamma=1)
+    # optim = torch.optim.Adam(design_network.parameters(), lr=5e-5, betas=(0.8,0.998))
+    # scheduler = torch.optim.lr_scheduler.ExponentialLR(optim, gamma=0.98)
     vals = []
 
     # main loop
-    for n in range(n_simulations):
+    for n in tqdm(range(n_steps)):
         
         # generate batched history
-        theta_0 = prior.sample(batch_size)
+        theta_0 = prior.sample(n_outer)
         history_xi = []
         history_y = []
-        design_network.reset_buffer(batch_size)
-        next_xi = torch.zeros((batch_size,design_network.design_dim))
-        next_y = torch.zeros((batch_size,design_network.y_dim))
+        design_network.reset_buffer(n_outer)
+        next_xi = torch.zeros((n_outer,design_network.design_dim))
+        next_y = torch.zeros((n_outer,design_network.y_dim))
         for t in range(T):
             next_xi = design_network(next_xi, next_y)
             next_y = likelihood.sample(next_xi, theta_0)
             history_xi.append(next_xi.unsqueeze(1))
             history_y.append(next_y.unsqueeze(1))
-        history_xi = torch.cat(history_xi, dim=1)  # batch_size x T x design_dim
-        history_y = torch.cat(history_y, dim=1)    # batch_size x T x y_dim
+        history_xi = torch.cat(history_xi, dim=1)  # n_outer x T x design_dim
+        history_y = torch.cat(history_y, dim=1)    # n_outer x T x y_dim
 
         # compute loss
-        thetas = prior.sample(batch_size * L).reshape((batch_size,L,-1))
-        thetas = torch.cat((theta_0.unsqueeze(1), thetas), dim=1)  # batch_size x (1+L) x theta_dim
-        log_prob = likelihood_history(
+        thetas = prior.sample(n_outer * L).reshape((n_outer,L,-1))
+        thetas = torch.cat((theta_0.unsqueeze(1), thetas), dim=1)  # n_outer x (1+L) x theta_dim
+        lp_history = likelihood_history(
             history_xi, 
             history_y, 
             thetas
-        ) # batch_size x (1+L) 
-        lp_nom = log_prob[:,0]
-        lp_denom = torch.logsumexp(log_prob,axis=1) - torch.log(torch.tensor(1+L))
+        ) # n_outer x (1+L) 
+        lp_nom = lp_history[:,0]
+        lp_denom = torch.logsumexp(lp_history,axis=1) - torch.log(torch.tensor(1+L))
         gL = lp_nom - lp_denom
         loss = -gL.mean()
 
         # param update
         optim.zero_grad()
         loss.backward()
+        # print(next(design_network.parameters()).grad)
         optim.step()
+        scheduler.step()
         if n%print_every == 0 and verbose == 'print':
-            print(f'{n+1}/{n_simulations}: elbo = {-loss:.6f}')
+            print(f'{n+1}/{n_steps}: elbo = {-loss:.6f}')
         if verbose == 'plot':
             vals.append(-loss.detach().cpu().numpy())
 

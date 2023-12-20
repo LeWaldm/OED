@@ -1,7 +1,3 @@
-#####
-# parts of the code are from https://github.com/andrewcharlesjones/spatial-experimental-design
-#####
-
 from importlib.metadata import distribution
 from lib2to3.pytree import convert
 import numpy as np
@@ -31,7 +27,11 @@ from copy import deepcopy
 import warnings
 from itertools import product
 
-   
+
+# ----- 
+# loading datasets code partly copied from https://github.com/andrewcharlesjones/spatial-experimental-design
+# -----
+
 class Allen_brain_3d():
 
     def get_data(self):
@@ -323,7 +323,12 @@ class Prostate_cancer_2d():
             grid = sgrid
         grid = grid.float()
         return grid
-        
+
+
+# ----- 
+# abstract Experimenter class
+# -----
+
 class Experimenter:
     def __init__(self) -> None:
         self.obs_data = {'design':[], 'y':[], 'design_params':[]}
@@ -367,6 +372,10 @@ class Experimenter:
         is design_params, second is design
         """
         raise NotImplementedError()
+
+# ----- 
+# specific Experimenters
+# -----
 
 class Tissue_discrete(Experimenter):
 
@@ -857,7 +866,9 @@ class Tissue_continuous(Experimenter):
             plt.title('Metrics of predictions')
         plt.show()
 
-
+# -----
+# abstract design network class
+# -----
 
 class Design_Network(torch.nn.Module):
     def __init__(self, encoder, emitter) -> None:

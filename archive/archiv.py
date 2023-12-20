@@ -17,8 +17,8 @@ from sklearn.metrics import r2_score, roc_auc_score, f1_score
 from scipy.stats import multivariate_normal as mvn
 from matplotlib.patches import Polygon
 from scipy.spatial import ConvexHull
-from OBED.src.distributions import Distr, Conditional_distr
-from OBED.src.model_utils import variational_inference
+from src.distributions import Distr, Conditional_distr
+from src.model_utils import variational_inference
 from tqdm import tqdm
 
 class Tissue():
@@ -465,10 +465,10 @@ def eig_NMC_old(
         # n_obs x n_outer x 1+n_inner
 
     # calculate estimate of eig
-    log_probs = np.log(probs).sum(axis=0) 
+    log_prob = np.log(probs).sum(axis=0) 
         # n_outer x 1+n_inner
-    log_numerator = log_probs[:,0]
-    log_denominator = -n_inner+ log_probs[:,1:].mean(axis=1)
+    log_numerator = log_prob[:,0]
+    log_denominator = -n_inner+ log_prob[:,1:].mean(axis=1)
     eig = np.mean(log_numerator - log_denominator)
     return eig
 

@@ -11,7 +11,7 @@ from matplotlib.patches import Polygon
 from matplotlib.collections import PatchCollection
 from scipy.spatial import ConvexHull
 import torch
-from OBED.src.data_utils import Experimenter
+from src.data_utils import Design_Network, Experimenter
 
 from tqdm import tqdm
 from itertools import product
@@ -20,7 +20,7 @@ from copy import deepcopy
 from tqdm import tqdm
 import warnings
 
-from OBED.src.distributions import Distr, Conditional_distr
+from src.distributions import Conditional_Distr_multixi, Distr, Conditional_distr
 
 EPSILON = 1e-8
 
@@ -36,18 +36,19 @@ def eig_NMC(
     Computes Expected Information Gain (EIG) with Nested Monte Carlo (NMC)
     which is unbiased.
     """
+    warnings.warn('Need to adjust to PCE, gradietn estimation might be incorrect!')
 
     # compute eig
     thetas = prior.sample(n_outer * (1+n_inner))
     thetas = thetas.reshape((n_outer,1+n_inner, thetas.shape[1]))
     ys = predictive.sample(design, thetas=thetas[:,0,:])
-    log_probs = predictive.log_probs(
+    log_prob = predictive.log_prob(
         torch.repeat_interleave(ys, repeats=(1+n_inner),dim=0),
         design,
         thetas=thetas.reshape((-1,thetas.shape[2])))
-    log_probs = log_probs.reshape((n_outer,1+n_inner))
-    lp_nom = log_probs[:,0]
-    lp_denom = torch.logsumexp(log_probs[:,1:],axis=1) - torch.log(torch.tensor(n_inner))
+    log_prob = log_prob.reshape((n_outer,1+n_inner))
+    lp_nom = log_prob[:,0]
+    lp_denom = torch.logsumexp(log_prob[:,1:],axis=1) - torch.log(torch.tensor(n_inner))
     vals = lp_nom - lp_denom
     eig = vals.mean()
 
@@ -73,26 +74,17 @@ def eig_PCE(
     thetas = prior.sample(n_outer * (1+n_inner))
     thetas = thetas.reshape((n_outer,1+n_inner, thetas.shape[1]))
     ys = predictive.sample(design, thetas=thetas[:,0,:])
-    log_probs = predictive.log_probs(
-        torch.repeat_interleave(ys, repeats=(1+n_inner),dim=0),
-        design,
-        thetas=thetas.reshape((-1,thetas.shape[2])))
-    log_probs = log_probs.reshape((n_outer,1+n_inner))
-    lp_nom = log_probs[:,0]
-    lp_denom = torch.logsumexp(log_probs,axis=1) - torch.log(torch.tensor(1+n_inner))
-    vals = lp_nom - lp_denom
-    pce = vals.mean()
-
-    # compute surrogate loss for optim with REINFORCE (minus for maximization)
-    log_probs = predictive.log_probs(
+    log_prob = predictive.log_prob(
         torch.repeat_interleave(ys.detach(), repeats=(1+n_inner),dim=0),
         design,
         thetas=thetas.reshape((-1,thetas.shape[2]))) # detached ys
-    log_probs = log_probs.reshape((n_outer,1+n_inner))
-    lp_nom = log_probs[:,0]
-    lp_denom = torch.logsumexp(log_probs,axis=1) - torch.log(torch.tensor(1+n_inner))
+    log_prob = log_prob.reshape((n_outer,1+n_inner))
+    lp_nom = log_prob[:,0]
+    lp_denom = torch.logsumexp(log_prob,axis=1) - torch.log(torch.tensor(1+n_inner))
     vals = lp_nom - lp_denom
-    
+    pce = vals.mean()
+
+    # compute surrogate loss for optim
     if reinforce:
         surrogate_loss = -torch.mean(vals + vals.detach().clone() * lp_nom)
     else:
@@ -134,17 +126,17 @@ def variational_inference(
 
         # compute (negative) elbo
         thetas = guide.sample(nsamples_elbo)
-        log_denom = guide.log_probs(thetas)
-        log_prior = prior.log_probs(thetas)
+        log_denom = guide.log_prob(thetas)
+        log_prior = prior.log_prob(thetas)
         if with_previous_prior:
             y = obs_data['y'][-1].reshape((1,-1))
             design = obs_data['design'][-1]
-            log_predictive = predictive.log_probs(
+            log_predictive = predictive.log_prob(
                     y.repeat(nsamples_elbo,1), design, thetas=thetas)
         else:
             log_predictive = 0.0
             for y,design in zip(obs_data['y'],obs_data['design']):
-                log_predictive += predictive.log_probs(
+                log_predictive += predictive.log_prob(
                     y.repeat(nsamples_elbo,1), design, thetas=thetas)
         log_numerator = log_predictive + log_prior
         neg_elbo = -torch.mean(log_numerator - log_denom) # negative s.t. minimization
@@ -405,3 +397,103 @@ def OED_fit(
             prior = posterior
 
     return experiment, thetas_MAP, metric_values, metric_names
+
+
+def train_DAD_design_policy(
+        T,
+        prior:Distr,
+        likelihood:Conditional_Distr_multixi,
+        design_network:Design_Network,
+        n_simulations=100,
+        batch_size=1,
+        L = 50,
+        print_every=1,
+        verbose = 'plot'
+):
+    assert likelihood.reparam_trick
+
+    # rollout likelihood over history
+    def likelihood_history(history_xi, history_y, thetas):
+        """
+        history_xi: batch_size x T x design_dim
+        history_y:  batch_size x T x y_dim
+        thetas:     batch_size x 1+L x theta_dim
+
+        returns: batch_size x 1+L
+        """
+        lp_prior = prior.log_prob(thetas.reshape((-1,thetas.shape[2])))\
+            .reshape((batch_size,1+L))
+        
+        xi = history_xi.unsqueeze(1).repeat((1,1+L,1,1))
+        y = history_y.unsqueeze(1).repeat((1,1+L,1,1))
+        thetas = thetas.unsqueeze(2).repeat((1,1,T,1))
+        lp_lik = likelihood.log_prob(
+            y.reshape((-1,y.shape[3])),
+            xi.reshape((-1,xi.shape[3])),
+            thetas.reshape((-1,thetas.shape[3])))
+        lp_lik = lp_lik.reshape((batch_size,1+L,T)).sum(axis=2)
+        log_prob = lp_lik + lp_prior
+        # xi = history_xi.reshape((-1,history_xi.shape[2]))
+        # y = history_y.reshape((-1,history_y.shape[2]))
+        # log_prob = likelihood.log_prob_multixi(
+        #     torch.repeat_interleave(y, repeats=k, dim=0),
+        #     torch.repeat_interleave(xi, repeats=k, dim=0),
+        #     thetas.repeat((batch_size*T,1)),
+        # )
+        # log_prob = log_prob.reshape((batch_size,T,k)).sum(axis=1)
+
+        return log_prob
+
+    # prepare optimization
+    for p in design_network.parameters():
+        p.requires_grad = True
+    optim = torch.optim.Adam(design_network.parameters(), lr=1e-4)
+    vals = []
+
+    # main loop
+    for n in range(n_simulations):
+        
+        # generate batched history
+        theta_0 = prior.sample(batch_size)
+        history_xi = []
+        history_y = []
+        design_network.reset_buffer(batch_size)
+        next_xi = torch.zeros((batch_size,design_network.design_dim))
+        next_y = torch.zeros((batch_size,design_network.y_dim))
+        for t in range(T):
+            next_xi = design_network(next_xi, next_y)
+            next_y = likelihood.sample(next_xi, theta_0)
+            history_xi.append(next_xi.unsqueeze(1))
+            history_y.append(next_y.unsqueeze(1))
+        history_xi = torch.cat(history_xi, dim=1)  # batch_size x T x design_dim
+        history_y = torch.cat(history_y, dim=1)    # batch_size x T x y_dim
+
+        # compute loss
+        thetas = prior.sample(batch_size * L).reshape((batch_size,L,-1))
+        thetas = torch.cat((theta_0.unsqueeze(1), thetas), dim=1)  # batch_size x (1+L) x theta_dim
+        log_prob = likelihood_history(
+            history_xi, 
+            history_y, 
+            thetas
+        ) # batch_size x (1+L) 
+        lp_nom = log_prob[:,0]
+        lp_denom = torch.logsumexp(log_prob,axis=1) - torch.log(torch.tensor(1+L))
+        gL = lp_nom - lp_denom
+        loss = -gL.mean()
+
+        # param update
+        optim.zero_grad()
+        loss.backward()
+        optim.step()
+        if n%print_every == 0 and verbose == 'print':
+            print(f'{n+1}/{n_simulations}: elbo = {-loss:.6f}')
+        if verbose == 'plot':
+            vals.append(-loss.detach().cpu().numpy())
+
+    # verbose
+    if verbose == 'plot':
+        plt.figure(figsize=(2, 4))
+        plt.plot(vals)
+        plt.xlabel('optim step')
+        plt.ylabel('EIG')
+        plt.show()

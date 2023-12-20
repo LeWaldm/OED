@@ -6,7 +6,6 @@ class Distr_interface:
     def __init__(self):
         # just to define instance variables, not sure how to do it properly
         self.params:dict = {}
-        self.is_torch = False
         self.reparam_trick = False
         self.params_constraints = {}
 
@@ -16,7 +15,7 @@ class Distr(Distr_interface):
     Intended to model a prior distribution.
     """
 
-    def log_probs(self,thetas):
+    def log_prob(self,thetas) -> torch.tensor:
         """
         calculate probabilities of thetas p(theta)
 
@@ -27,7 +26,7 @@ class Distr(Distr_interface):
         """
         raise NotImplementedError()
 
-    def sample(self,n):
+    def sample(self,n) -> torch.tensor:
         """
         sample n samples from distribution
 
@@ -38,7 +37,7 @@ class Distr(Distr_interface):
         """
         raise NotImplementedError()
     
-    def predict_mle(self):
+    def predict_mle(self) -> torch.tensor:
         """
         returns the MLE of the distribution
 
@@ -50,46 +49,74 @@ class Distr(Distr_interface):
 class Conditional_distr(Distr_interface):
     """
     Generic conditional distribution class over k-dim outcome y 
-    given d-dim experimental design design and p-dim parameters of interest theta, i.e. 
+    given d-dim single experimental design design and p-dim parameters of interest theta, i.e. 
         p(y | design, theta)
     """
 
-    def sample(self,design,thetas):
+    def sample(self,design,thetas) -> torch.tensor:
         """
-        sample from distribution for given design and each given theta
+        sample from distribution for given single design and each given theta
 
         params:
-            design: d
+            design: any shape
             thetas: txp
 
         returns: txk
         """
         raise NotImplementedError()
     
-    def log_probs(self,ys,design,thetas):
+    def log_prob(self,ys,design,thetas) -> torch.tensor:
         """
-        calculate density (pmf) of distribution for inputs
+        calculate density (pmf) of distribution
 
         params:
-            ys: nxk
-            design: d
+            ys: nx...
+            design: any shape
             thetas: nxp or 1xp (latter  will be broadcasted)
 
         returns: nx1
         """
         raise NotImplementedError()
-    
-    def predict_mle(self,design,thetas):
+
+    def predict_mle(self,design,thetas) -> torch.tensor:
         """
         Calculate MLE of distribution given designs,thetas (i.e. predictions of designs under theta) 
         
         params:
-            design: d
+            design: any shape
             thetas: nxp or 1xp (latter  will be broadcasted to nxp)
         
         returns: nx1
         """
         raise NotImplementedError()
+
+class Conditional_Distr_multixi(Distr_interface):
+
+    def sample(self,designs,thetas) -> torch.tensor:
+        """
+        sample from distribution for given single design and each given theta
+
+        params:
+            designs: nx...
+            theta: nx...
+
+        returns: nxk
+        """
+        raise NotImplementedError()
+
+    def log_prob(self,ys,designs,thetas) -> torch.tensor:
+        """
+        calculate density (pmf) of distribution
+
+        params:
+            ys: nx...
+            designs: nx...
+            thetas: nx...
+
+        returns: nx1
+        """
+        raise NotImplementedError()
+
 
 class Circle_predictive(Conditional_distr):
     """
@@ -116,7 +143,7 @@ class Circle_predictive(Conditional_distr):
             raise ValueError()
         return c,r
 
-    def log_probs(self, ys, design, thetas):
+    def log_prob(self, ys, design, thetas):
 
         if self.with_weights:
             weights = design[:,0]
@@ -143,13 +170,13 @@ class Circle_predictive(Conditional_distr):
         else: # with temperature
             logits = c[:,2] * (torch.norm(points - c[:,:2], dim=1) - r)
         bern_ps = torch.sigmoid(-logits).clamp(self.eps, 1-self.eps)
-        log_probs_points = torch.distributions.Binomial(probs=bern_ps)\
+        log_prob_points = torch.distributions.Binomial(probs=bern_ps)\
             .log_prob(ys.reshape((-1)))
-        log_probs = log_probs_points.reshape((n,npoints))
+        log_prob = log_prob_points.reshape((n,npoints))
         if self.with_weights:
-            log_probs = log_probs * weights.reshape((1,-1))
-        log_probs = log_probs.sum(axis=1)
-        return log_probs
+            log_prob = log_prob * weights.reshape((1,-1))
+        log_prob = log_prob.sum(axis=1)
+        return log_prob
     
     def sample(self, design, thetas):
 
@@ -208,7 +235,7 @@ class Circle_prior(Distr):
         self.reparam_trick = True
         self.min_log = torch.log(torch.tensor(EPSILON))
 
-    def log_probs(self,thetas):
+    def log_prob(self,thetas):
         r = thetas[:,0]
         c = thetas[:,1:3]
         temp = thetas[:,3]

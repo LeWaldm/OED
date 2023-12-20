@@ -24,9 +24,9 @@ from torch import Value, _nested_tensor_softmax_with_shape
 import torch
 from math import ceil,sqrt
 
-from OBED.src.utils import get_data_dir
+from src.utils import get_data_dir
 import os
-import OBED.src.distributions as distr
+import src.distributions as distr
 from copy import deepcopy
 import warnings
 from itertools import product
@@ -858,3 +858,25 @@ class Tissue_continuous(Experimenter):
         plt.show()
 
 
+
+class Design_Network(torch.nn.Module):
+    def __init__(self, encoder, emitter) -> None:
+        super().__init__()
+        assert isinstance(encoder, torch.nn.Module)
+        assert isinstance(emitter, torch.nn.Module)
+        self.encoder = encoder  # (xi=Nxd, y=Nxk) -> Nxr
+        self.emitter = emitter  # (repr=Nxr) -> Nxd
+        self.design_dim = encoder.design_dim
+        self.y_dim = encoder.y_dim
+        self.repr_dim = encoder.repr_dim
+
+    def forward(self, xi, y):
+        """ 
+            xi: N x design_dim, 
+            y: N x y_dim
+        """
+        self.buffer_mean_representation = self.buffer_mean_representation + self.encoder(xi,y)
+        return self.emitter(self.buffer_mean_representation)
+    
+    def reset_buffer(self, batch_size):
+        self.buffer_mean_representation = torch.zeros((batch_size,self.repr_dim))

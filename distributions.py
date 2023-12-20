@@ -118,6 +118,13 @@ class Circle_predictive(Conditional_distr):
 
     def log_probs(self, ys, design, thetas):
 
+        if self.with_weights:
+            weights = design[:,0]
+            idx = (weights > torch.tensor(0.1)).detach()
+            weights = weights[idx]
+            design = design[idx,1:]
+            ys = ys[:,idx]
+
         c,r = self._parse_params(thetas)
         n = ys.shape[0]
         if c.shape[0] == 1:
@@ -125,9 +132,6 @@ class Circle_predictive(Conditional_distr):
             c = c.repeat(ys.shape[0],1) 
         else:
             assert c.shape[0] == ys.shape[0]
-        if self.with_weights:
-            weights = design[:,0]
-            design = design[:,1:]
         points = design.reshape((-1,2))
         npoints = points.shape[0]
         r = torch.repeat_interleave(r, repeats=npoints, dim=0)

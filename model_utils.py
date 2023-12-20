@@ -1,9 +1,7 @@
-from matplotlib.pylab import f
-from matplotlib.rcsetup import validate_stringlist
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from sklearn.metrics import f1_score, pairwise_distances, roc_auc_score
+from sklearn.metrics import f1_score, roc_auc_score
 from sklearn.gaussian_process import GaussianProcessRegressor as GPR
 from sklearn.gaussian_process.kernels import RBF, WhiteKernel, Matern
 from sklearn.metrics import r2_score
@@ -13,10 +11,8 @@ from matplotlib.patches import Polygon
 from matplotlib.collections import PatchCollection
 from scipy.spatial import ConvexHull
 import torch
-# from DiffCBED.strategies.multi_perturbation_ed.represent import posterior
 from data_utils import Experimenter
 
-import matplotlib
 from tqdm import tqdm
 from itertools import product
 from scipy.stats import bernoulli,multivariate_normal
@@ -100,6 +96,7 @@ def eig_PCE(
         predictive:Conditional_distr,
         n_outer=100,
         n_inner=10,
+        reinforce=False,
         **kwargs
 ):
     """
@@ -131,7 +128,10 @@ def eig_PCE(
     lp_denom = torch.logsumexp(log_probs,axis=1) - torch.log(torch.tensor(1+n_inner))
     vals = lp_nom - lp_denom
     
-    surrogate_loss = -torch.mean(vals + vals.detach().clone() * lp_nom)
+    if reinforce:
+        surrogate_loss = -torch.mean(vals + vals.detach().clone() * lp_nom)
+    else:
+        surrogate_loss = -pce
     return pce, surrogate_loss
 
 def variational_inference(
@@ -256,8 +256,10 @@ def eig_cont_optim(
     """
     assert eig_method in [eig_PCE] # check that lower bound on EIG
     assert verbose in [None, 'print', 'plot']
-    warnings.warn('No optim steps! Checking variance of grad')
     check_grads = True
+    grad_update = True
+    if not grad_update:
+        warnings.warn('grad_update=False, so no optimization is performed')
 
     # prepare optim
     if initial_design_params is None:
@@ -266,7 +268,7 @@ def eig_cont_optim(
     for k,v in optim_params.items():
         v.requires_grad = True
 
-    optim = torch.optim.SGD(optim_params.values(), lr=1e-1)
+    optim = torch.optim.SGD(optim_params.values(), lr=1e-2)
     lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optim, max_lr=1e-2, total_steps=n_steps_optim)
     eig_vals = []
@@ -281,20 +283,22 @@ def eig_cont_optim(
         optim.zero_grad()
         loss.backward()
 
+        # check grads
         if check_grads:
             optim_params_grads = {}
             for k,v in optim_params.items():
                 grad = v.grad.detach().clone()
-                v.grad = None
+                if not grad_update:
+                    v.grad = None
                 optim_params_grads[k] = grad
             design_params_grads = optim2design(optim_params_grads, optim_args)
             for k in design_params_grads.keys():
                 grads_design[k].append(design_params_grads[k].detach().cpu().numpy())
                 grads_optim[k].append(optim_params_grads[k].detach().cpu().numpy())
-        else: 
+        if grad_update:
             optim.step()
             lr_scheduler.step()
-            print(f'{s+1}/{n_steps_optim}, design_params: {design_params}')
+            # print(f'{s+1}/{n_steps_optim}, design_params: {design_params}')
         if s % print_every == 0 and verbose=='print':
             print(f'{s+1}/{n_steps_optim}, eig: {eig}')
         elif verbose == 'plot':

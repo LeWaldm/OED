@@ -17,8 +17,8 @@ from sklearn.metrics import r2_score, roc_auc_score, f1_score
 from scipy.stats import multivariate_normal as mvn
 from matplotlib.patches import Polygon
 from scipy.spatial import ConvexHull
-from distributions import Distr, Conditional_distr
-from model_utils import variational_inference
+from OBED.src.distributions import Distr, Conditional_distr
+from OBED.src.model_utils import variational_inference
 from tqdm import tqdm
 
 class Tissue():

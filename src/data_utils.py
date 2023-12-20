@@ -24,9 +24,9 @@ from torch import Value, _nested_tensor_softmax_with_shape
 import torch
 from math import ceil,sqrt
 
-from utils import get_data_dir
+from OBED.src.utils import get_data_dir
 import os
-import distributions as distr
+import OBED.src.distributions as distr
 from copy import deepcopy
 import warnings
 from itertools import product

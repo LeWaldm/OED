@@ -11,7 +11,7 @@ from matplotlib.patches import Polygon
 from matplotlib.collections import PatchCollection
 from scipy.spatial import ConvexHull
 import torch
-from data_utils import Experimenter
+from OBED.src.data_utils import Experimenter
 
 from tqdm import tqdm
 from itertools import product
@@ -20,44 +20,9 @@ from copy import deepcopy
 from tqdm import tqdm
 import warnings
 
-from distributions import Distr, Conditional_distr
+from OBED.src.distributions import Distr, Conditional_distr
 
 EPSILON = 1e-8
-
-
-def eig_varNMC(
-        e,
-        prior:Distr,
-        predictive:Conditional_distr,
-
-        n_steps_varinf = 100,
-
-):
-    """
-    variational NMC is an upper bound on the EIG which is 
-    asymptotically (for nsamples->infty) unbiased
-    """
-
-    # learn proposal distribution
-    propsal = None
-
-    # final nmc estimator
-    eig = None
-
-    raise NotImplementedError()
-    return eig
-
-def eig_ACE():
-    """
-    the Adaptive Contrastive Estimator is a lower bound on the EIG 
-    which is asymptotically (for nsamples->infty) unbiased
-
-    TODO: should be very simple adaptation of eig_varNMC
-    """
-    raise NotImplementedError()
-
-
-
 
 def eig_NMC(
         design,

@@ -12,12 +12,12 @@ This codebase implements abstract classes and corresponding functions for Bayesi
 - `distributions`: abstract prior and likelihood classes
 - `model_utils`: functions for discrete BOED, continuous BOED with PCE, and DAD building on abstract Experimenter and distribution classes
 
-### Examples:
+### Examples
 We demonstrate the codebase on 2 different versions of 2d tissue slicing closely aligned to https://github.com/andrewcharlesjones/spatial-experimental-design: 
 - discrete: iteration over finite candidate designs with NMC
 - continuous: weighting each point on the grid by its distance to the chosen slice and optimize PCE
 
 Additionally, there is an experimental example with a simple 1d location finding inspired by https://arxiv.org/abs/2103.02438 and a 2d tissue model that samples by interpolation from an affine grid.
 
-### Additional Features:
+### Additional Features
 - constraining distribution params by simple transformations during optimization

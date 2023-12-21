@@ -1,21 +1,10 @@
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
-from sklearn.metrics import f1_score, roc_auc_score
-from sklearn.gaussian_process import GaussianProcessRegressor as GPR
-from sklearn.gaussian_process.kernels import RBF, WhiteKernel, Matern
-from sklearn.metrics import r2_score
-import seaborn as sns
-from scipy.stats import multivariate_normal as mvn
-from matplotlib.patches import Polygon
-from matplotlib.collections import PatchCollection
-from scipy.spatial import ConvexHull
+from sklearn.metrics import f1_score, roc_auc_score, r2_score
 import torch
 from src.data_utils import Design_Network, Experimenter
 
 from tqdm import tqdm
-from itertools import product
-from scipy.stats import bernoulli,multivariate_normal
 from copy import deepcopy
 from tqdm import tqdm
 import warnings
@@ -36,33 +25,16 @@ def eig_NMC(
     Computes Expected Information Gain (EIG) with Nested Monte Carlo (NMC)
     which is unbiased.
     """
-    warnings.warn('Need to adjust to PCE, gradietn estimation might be incorrect!')
-
-    # compute eig
-    thetas = prior.sample(n_outer * (1+n_inner))
-    thetas = thetas.reshape((n_outer,1+n_inner, thetas.shape[1]))
-    ys = predictive.sample(design, thetas=thetas[:,0,:])
-    log_prob = predictive.log_prob(
-        torch.repeat_interleave(ys, repeats=(1+n_inner),dim=0),
-        design,
-        thetas=thetas.reshape((-1,thetas.shape[2])))
-    log_prob = log_prob.reshape((n_outer,1+n_inner))
-    lp_nom = log_prob[:,0]
-    lp_denom = torch.logsumexp(log_prob[:,1:],axis=1) - torch.log(torch.tensor(n_inner))
-    vals = lp_nom - lp_denom
-    eig = vals.mean()
-
-    # compute eig for optim with REINFORCE (minus for maximization)
-    loss_optim = -torch.mean(vals + vals.detach() * lp_nom)
-    return eig, loss_optim
+    return eig_PCE(design,prior,predictive,n_outer,n_inner,is_NMC=True,**kwargs)
 
 def eig_PCE(
         design,
         prior:Distr,
         predictive:Conditional_distr,
-        n_outer=100,
-        n_inner=10,
-        reinforce=False,
+        n_outer = 100,
+        n_inner = 10,
+        reinforce = False,
+        is_NMC = False,
         **kwargs
 ):
     """
@@ -80,7 +52,10 @@ def eig_PCE(
         thetas=thetas.reshape((-1,thetas.shape[2]))) # detached ys
     log_prob = log_prob.reshape((n_outer,1+n_inner))
     lp_nom = log_prob[:,0]
-    lp_denom = torch.logsumexp(log_prob,axis=1) - torch.log(torch.tensor(1+n_inner))
+    if is_NMC:
+        lp_denom = torch.logsumexp(log_prob[:,1:],axis=1) - torch.log(torch.tensor(n_inner))
+    else:
+        lp_denom = torch.logsumexp(log_prob,axis=1) - torch.log(torch.tensor(1+n_inner))
     vals = lp_nom - lp_denom
     pce = vals.mean()
 
@@ -90,81 +65,6 @@ def eig_PCE(
     else:
         surrogate_loss = -pce
     return pce, surrogate_loss
-
-def variational_inference(
-        obs_data:dict,
-        prior:Distr,
-        predictive:Conditional_distr,
-        guide:Distr,
-        n_steps_varinf = 500,
-        nsamples_elbo = 30,
-        print_every = 50,
-        with_previous_prior=True,
-        verbose='print',
-        **kwargs):
-    """
-    Standard variational inference to find posterior using elbo.
-
-    Variational distribution is named 'guide' as in pyro.
-    """
-
-    assert guide.reparam_trick == True
-    assert verbose in [None, 'print', 'plot']
-
-    # prepare optimization
-    optim_params = design2optim(guide.params, guide.params_constraints)
-    for p in optim_params.values():
-        p.requires_grad = True
-    optim = torch.optim.Adam(optim_params.values(), lr=1e-2)
-    vals_elbo = []
-
-    # optimization
-    for s in tqdm(range(n_steps_varinf)):
-
-        # manually update guide params
-        guide.params = optim2design(optim_params, guide.params_constraints)
-
-        # compute (negative) elbo
-        thetas = guide.sample(nsamples_elbo)
-        log_denom = guide.log_prob(thetas)
-        log_prior = prior.log_prob(thetas)
-        if with_previous_prior:
-            y = obs_data['y'][-1].reshape((1,-1))
-            design = obs_data['design'][-1]
-            log_predictive = predictive.log_prob(
-                    y.repeat(nsamples_elbo,1), design, thetas=thetas)
-        else:
-            log_predictive = 0.0
-            for y,design in zip(obs_data['y'],obs_data['design']):
-                log_predictive += predictive.log_prob(
-                    y.repeat(nsamples_elbo,1), design, thetas=thetas)
-        log_numerator = log_predictive + log_prior
-        neg_elbo = -torch.mean(log_numerator - log_denom) # negative s.t. minimization
-
-        # torch step
-        optim.zero_grad()
-        neg_elbo.backward()
-        optim.step()
-
-        if s%print_every == 0 and verbose == 'print':
-            print(f'{s+1}/{n_steps_varinf}: elbo = {-neg_elbo:.6f}')
-        elif verbose == 'plot':
-            vals_elbo.append(-neg_elbo.detach().cpu().numpy())
-
-    # clean up optimization
-    for k,v in optim_params.items():
-        optim_params[k] = v.detach().clone()
-    guide.params = optim2design(optim_params, guide.params_constraints)
-
-    # plotting
-    if verbose == 'plot':
-        plt.figure(figsize=(2, 4))
-        plt.plot(vals_elbo)
-        plt.xlabel('optim step')
-        plt.ylabel('ELBO')
-        plt.show()
-
-    return guide
 
 
 def optim2design(optim_params, optim_args):
@@ -196,25 +96,97 @@ def design2optim(design_params, optim_args):
         optim_params[k] = optim_params[k].detach().clone()
     return optim_params
 
+def variational_inference(
+        obs_data:dict,
+        prior:Distr,
+        predictive:Conditional_distr,
+        guide:Distr,
+        n_steps = 500,
+        nsamples_elbo = 30,
+        print_every = 50,
+        with_previous_prior=True,
+        verbose=False,
+        **kwargs):
+    """
+    Standard variational inference to find posterior using elbo.
+
+    Variational distribution is named 'guide' as in pyro.
+    """
+
+    assert guide.reparam_trick == True
+
+    # prepare optimization
+    optim_params = design2optim(guide.params, guide.params_constraints)
+    for p in optim_params.values():
+        p.requires_grad = True
+    optim = torch.optim.Adam(optim_params.values(), lr=1e-2)
+    vals_elbo = []
+
+    # optimization
+    for s in (bar := tqdm(range(n_steps))):
+
+        # manually update guide params
+        guide.params = optim2design(optim_params, guide.params_constraints)
+
+        # compute (negative) elbo
+        thetas = guide.sample(nsamples_elbo)
+        log_denom = guide.log_prob(thetas)
+        log_prior = prior.log_prob(thetas)
+        if with_previous_prior:
+            y = obs_data['y'][-1].reshape((1,-1))
+            design = obs_data['design'][-1]
+            log_predictive = predictive.log_prob(
+                    y.repeat(nsamples_elbo,1), design, thetas=thetas)
+        else:
+            log_predictive = 0.0
+            for y,design in zip(obs_data['y'],obs_data['design']):
+                log_predictive += predictive.log_prob(
+                    y.repeat(nsamples_elbo,1), design, thetas=thetas)
+        log_numerator = log_predictive + log_prior
+        neg_elbo = -torch.mean(log_numerator - log_denom) # negative s.t. minimization
+
+        # torch step
+        optim.zero_grad()
+        neg_elbo.backward()
+        optim.step()
+
+        if s%print_every == 0:
+            bar.set_description(f'elbo = {-neg_elbo:.6f}')
+        if verbose:
+            vals_elbo.append(-neg_elbo.detach().cpu().numpy())
+
+    # clean up optimization
+    for k,v in optim_params.items():
+        optim_params[k] = v.detach().clone()
+    guide.params = optim2design(optim_params, guide.params_constraints)
+
+    # plotting
+    if verbose:
+        plt.figure(figsize=(2, 4))
+        plt.plot(vals_elbo)
+        plt.xlabel('optim step')
+        plt.ylabel('ELBO')
+        plt.show()
+
+    return guide
+
 def eig_cont_optim(
         experiment:Experimenter,
         prior,
         predictive,
         eig_method,
         optim_args = {},    
-        n_steps_optim=500,  
+        n_steps=500,  
         print_every=50,
         initial_design_params = None,
-        verbose=None,
+        verbose = True,
+        check_grads = False,  # no gradient update and plot gradients for each parameter
         **kwargs
 ):
     """
     Find optimal design by maximizing EIG w.r.t. continuous design_params
     """
-    assert eig_method in [eig_PCE] # check that lower bound on EIG
-    assert verbose in [None, 'print', 'plot']
-    check_grads = True
-    grad_update = True
+    grad_update = not check_grads
     if not grad_update:
         warnings.warn('grad_update=False, so no optimization is performed')
 
@@ -227,13 +199,13 @@ def eig_cont_optim(
 
     optim = torch.optim.SGD(optim_params.values(), lr=1e-2)
     lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optim, max_lr=1e-2, total_steps=n_steps_optim)
+        optim, max_lr=1e-2, total_steps=n_steps)
     eig_vals = []
 
     # main loop
     grads_optim = {k:[] for k in optim_params.keys()}
     grads_design = {k:[] for k in optim_params.keys()}
-    for s in tqdm(range(n_steps_optim)):
+    for s in (bar := tqdm(range(n_steps))):
         design_params = optim2design(optim_params,optim_args)
         _,design = experiment.params2design(design_params)
         eig,loss = eig_method(design,prior,predictive, **kwargs)
@@ -255,10 +227,9 @@ def eig_cont_optim(
         if grad_update:
             optim.step()
             lr_scheduler.step()
-            # print(f'{s+1}/{n_steps_optim}, design_params: {design_params}')
-        if s % print_every == 0 and verbose=='print':
-            print(f'{s+1}/{n_steps_optim}, eig: {eig}')
-        elif verbose == 'plot':
+        if s % print_every == 0:
+            bar.set_description(f'EIG = {eig:.6f}')
+        if verbose:
             eig_vals.append(eig.detach().cpu().numpy())
 
     # plot grads
@@ -278,7 +249,7 @@ def eig_cont_optim(
         v = v.detach().clone()
 
     # plot eig_vals
-    if verbose == 'plot':
+    if verbose:
         plt.figure(figsize = (2, 4))
         plt.plot(eig_vals)
         plt.xlabel('optim step')
@@ -293,6 +264,7 @@ def eig_discrete_optim(
         prior:Distr,
         predictive:Conditional_distr,
         eig_calc_method,
+        verbose = False,
         **kwargs
 ):
     """
@@ -311,18 +283,14 @@ def eig_discrete_optim(
     for (design_params,design) in tqdm(candidate_designs):
         intercept.append(design_params['intercept'])   
         slope.append(design_params['slope'])   
-        curr_eig, _ = eig_calc_method(design, prior, predictive, **kwargs)
-        # nmc, design_params = eig_NMC(
-        #     design, prior, predictive, **kwargs
-        # )
-        # print(f'PCE: {curr_eig}, NMC: {nmc}')
+        curr_eig, _ = eig_calc_method(design, prior, predictive)
         if curr_eig > best_eig:
             best_eig = curr_eig
             best_design_params = design_params
         eigs.append(curr_eig.detach().cpu().numpy())
 
     # plotting
-    if True:
+    if verbose:
         plt.figure(figsize=(2, 4))
         plt.scatter(intercept, slope, c=eigs)
         plt.xlabel('intercept')
@@ -338,9 +306,11 @@ def OED_fit(
         prior:Distr,
         predictive:Conditional_distr,
         n_designs,
-        eig_calc_method,
-        eig_optim_method,
-        with_previous_prior=True,
+        eig_calc_method,    # e.g. eig_NMC, eig_PCE
+        eig_optim_method,   # e.g. eig_discrete_optim, eig_cont_optim
+        varinf_method,      # e.g. partial(variational_inference, ...)
+        with_previous_prior = True,
+        verbose = True,
         **kwargs
 ):
     # prepare metrics
@@ -353,27 +323,28 @@ def OED_fit(
 
     # main loop
     for iter in range(n_designs):
-        print(f'------- Iteration {iter+1}/{n_designs} -------')
+        print(f'\n------- Iteration {iter+1}/{n_designs} -------')
 
         # find best design
+        print('Finding best design...')
         eig, design_params = eig_optim_method(
             experiment,prior,predictive,eig_calc_method, 
-            initial_design_params = design_params,
-            **kwargs
-        )
+            initial_design_params = design_params)
         experiment.execute_design(design_params)
         best_eigs.append(eig)
-        print(f'Executed design; best_eig: {eig}, design_params: {design_params}')
+        print(f'Executed design; best_eig: {eig:.6f}, design_params: {design_params}')
 
         # fit "posterior"
+        print('Fitting posterior...')
         obs_data = experiment.get_obs_data()
         guide = deepcopy(prior)
-        posterior = variational_inference(
+        posterior = varinf_method(
             obs_data,prior,predictive,guide,with_previous_prior=with_previous_prior,**kwargs)
-        
+        thetas_MAP = posterior.predict_mle()
+        print(f'Fitted posterior; thetas_MAP: {thetas_MAP}')
+
         # evaluate with MAP params
         y,design = experiment.get_eval_data()
-        thetas_MAP = posterior.predict_mle()
         pred_probs = predictive.predict_mle(design, thetas_MAP).detach().cpu().numpy()
         preds_int = (pred_probs > 0.5).astype(np.int8).reshape((-1))
         for i in range(len(metrics)):
@@ -384,13 +355,15 @@ def OED_fit(
             metric_values[i].append(val)
 
         # plotting
-        print(f'thetas_MAP: {thetas_MAP}')
-        experiment.verbose_designs(
-            design_eval=design,
-            pred_probs=pred_probs,
-            metric_values=metric_values,
-            metric_names=metric_names
-        )
+        if verbose or iter == n_designs-1:
+            print('Plotting results...')
+            experiment.verbose_designs(
+                design_eval=design,
+                pred_probs=pred_probs,
+                metric_values=metric_values,
+                metric_names=metric_names
+            )
+            print('Plotted results.')
 
         # prepare next loop
         if with_previous_prior:
@@ -439,12 +412,11 @@ def train_DAD_design_policy(
         p.requires_grad = True
     optim = torch.optim.Adam(design_network.parameters(), lr=5e-5, betas=(0.8,0.998))
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optim, gamma=1)
-    # optim = torch.optim.Adam(design_network.parameters(), lr=5e-5, betas=(0.8,0.998))
-    # scheduler = torch.optim.lr_scheduler.ExponentialLR(optim, gamma=0.98)
     vals = []
 
     # main loop
-    for n in tqdm(range(n_steps)):
+    print('Training DAD design policy...')
+    for n in (bar := tqdm(range(n_steps))):
         
         # generate batched history
         theta_0 = prior.sample(n_outer)
@@ -477,16 +449,16 @@ def train_DAD_design_policy(
         # param update
         optim.zero_grad()
         loss.backward()
-        # print(next(design_network.parameters()).grad)
         optim.step()
         scheduler.step()
-        if n%print_every == 0 and verbose == 'print':
-            print(f'{n+1}/{n_steps}: elbo = {-loss:.6f}')
-        if verbose == 'plot':
+        if n%print_every == 0:
+            bar.set_description(f'loss (asc) = {-loss:.6f}')
+        if verbose:
             vals.append(-loss.detach().cpu().numpy())
+    print('Trained DAD design policy.')
 
     # verbose
-    if verbose == 'plot':
+    if verbose:
         plt.figure(figsize=(2, 4))
         plt.plot(vals)
         plt.xlabel('optim step')

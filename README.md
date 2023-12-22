@@ -21,3 +21,7 @@ Additionally, there is an experimental example with a simple 1d location finding
 
 ### Additional Features
 - constraining distribution params by simple transformations during optimization
+
+### Note of Caution
+- Testing was limited (only performed on one example).
+- Eventually, other variance reduction methods for the gradient estimation need to be implemented.

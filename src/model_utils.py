@@ -381,7 +381,7 @@ def train_DAD_design_policy(
         n_outer = 50,
         L = 20,
         print_every = 1,
-        verbose = 'plot'
+        verbose = True
 ):
     assert likelihood.reparam_trick
 
